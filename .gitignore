@@ -135,6 +135,7 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+.venv/
 
 # Spyder project settings
 .spyderproject
@@ -179,3 +180,5 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+
+historia.jpg
