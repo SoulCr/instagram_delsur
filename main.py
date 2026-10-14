@@ -10,19 +10,23 @@ Uso:
 ofertas.csv:  fecha,producto,precio,imagen
     - Cada fila es UNA historia. Todas las filas con la fecha del día se publican.
     - En "producto" separá los items con "+"  (ej: 2 kg pata muslo + 1 kg chori)
-    - "imagen" es la foto de esa oferta (opcional; si falta, queda un recuadro claro)
+    - "imagen" es opcional: si la dejás vacía, las fotos se buscan solas en fotos/
+      según el producto (pata muslo, pechuga, chori, picada, mila pollo, mila carne).
+      Para indicarlas a mano usá: fotos/a.jpg + fotos/b.jpg
 """
 import argparse
 import csv
 import os
 import time
+import unicodedata
 from datetime import date
 from functools import lru_cache
 from pathlib import Path
 
 import requests
 from dotenv import load_dotenv
-from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
+from PIL import (Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter,
+                 ImageFont, ImageOps, ImageStat)
 
 load_dotenv()
 
@@ -43,6 +47,21 @@ AMARILLO_OSCURO = (240, 220, 35)
 ROJO = (200, 45, 32)
 OSCURO = (30, 26, 22)
 BLANCO = (255, 255, 255)
+
+CARPETA_FOTOS = Path("fotos")
+EXTENSIONES = (".jpg", ".jpeg", ".png", ".jfif", ".webp")
+COLOR_CIRCULO = (255, 249, 222)  # círculo suave detrás de cada producto (muy claro para no teñir la foto)
+
+# Si la columna "imagen" del CSV está vacía, la foto se busca sola por palabras
+# clave del producto: (palabras que deben aparecer, nombre del archivo sin extensión)
+REGLAS_FOTOS = [
+    (("mila", "pollo"), "milanesas_pollo"),
+    (("mila", "carne"), "milanesas_carne"),
+    (("pata",), "pata_muslo"),
+    (("pechuga",), "pechuga"),
+    (("chori",), "chorizos"),
+    (("picada",), "carne_picada"),
+]
 
 CSV_OFERTAS = "ofertas.csv"
 CARPETA_SALIDA = Path("salida")
@@ -129,6 +148,136 @@ def crear_fondo():
     return fondo
 
 
+# ---------- Fotos de productos ----------
+def sin_acentos(texto):
+    t = unicodedata.normalize("NFD", texto.lower())
+    return "".join(c for c in t if unicodedata.category(c) != "Mn")
+
+
+def foto_para(texto_producto):
+    """Busca en fotos/ la foto que corresponde a un producto (ej: '2 kg pata muslo')."""
+    t = sin_acentos(texto_producto)
+    for palabras, nombre in REGLAS_FOTOS:
+        if all(p in t for p in palabras):
+            for ext in EXTENSIONES:
+                ruta = CARPETA_FOTOS / f"{nombre}{ext}"
+                if ruta.is_file():
+                    return ruta
+    return None
+
+
+def fotos_de_oferta(oferta, partes):
+    """Fotos del combo: las del CSV (separadas por +) o, si faltan, las automáticas."""
+    explicitas = [x.strip() for x in (oferta.get("imagen") or "").split("+") if x.strip()]
+    if explicitas:
+        return [Path(x) for x in explicitas]
+    return [foto_para(p) for p in partes]
+
+
+def tipo_de_fondo(img):
+    """'blanco' (fondo blanco), 'recorte' (fondo liso de color) o 'cubrir' (sin fondo liso)."""
+    w, h = img.size
+    t = max(2, min(w, h) // 100)
+    tiras = [img.crop((0, 0, w, t)), img.crop((0, h - t, w, h)),
+             img.crop((0, 0, t, h)), img.crop((w - t, 0, w, h))]
+    stats = [ImageStat.Stat(x) for x in tiras]
+    desv = max(max(st.stddev) for st in stats)
+    media = tuple(int(sum(st.mean[i] for st in stats) / 4) for i in range(3))
+    brillo = sum(media) / 3
+    if brillo >= 230 and desv < 35:
+        return "blanco", media
+    if desv < 14:
+        return "recorte", media
+    return "cubrir", None
+
+
+def retocar(img):
+    """Retoque suave: fondo casi blanco a blanco puro, un poco de contraste, color y nitidez."""
+    img = img.point(lambda v: min(255, int(v * 255 / 246)))
+    img = ImageEnhance.Contrast(img).enhance(1.05)
+    img = ImageEnhance.Color(img).enhance(1.08)
+    return img.filter(ImageFilter.UnsharpMask(radius=1.6, percent=70, threshold=2))
+
+
+def ajustar(img, caja_w, caja_h, relleno):
+    escala = min(caja_w * relleno / img.width, caja_h * relleno / img.height)
+    nuevo = (max(1, round(img.width * escala)), max(1, round(img.height * escala)))
+    return img.resize(nuevo, Image.LANCZOS)
+
+
+def recortar_fondo(img, color_fondo, tolerancia=26):
+    """Quita un fondo liso conectado a los bordes y devuelve la imagen con transparencia."""
+    dif = ImageChops.difference(img, Image.new("RGB", img.size, color_fondo))
+    r, g, b = dif.split()
+    maxd = ImageChops.lighter(ImageChops.lighter(r, g), b)
+    parecido = maxd.point(lambda v: 255 if v < tolerancia else 0)
+    w, h = img.size
+    for sx, sy in [(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1),
+                   (w // 2, 0), (w // 2, h - 1), (0, h // 2), (w - 1, h // 2)]:
+        if parecido.getpixel((sx, sy)) == 255:
+            ImageDraw.floodfill(parecido, (sx, sy), 128)
+    alfa = parecido.point(lambda v: 0 if v == 128 else 255)
+    alfa = alfa.filter(ImageFilter.MinFilter(3)).filter(ImageFilter.GaussianBlur(1.2))
+    out = img.convert("RGBA")
+    out.putalpha(alfa)
+    return out
+
+
+def circulo(imagen, centro, diametro, color, ss=3):
+    m = Image.new("L", (diametro * ss, diametro * ss), 0)
+    ImageDraw.Draw(m).ellipse((0, 0, diametro * ss - 1, diametro * ss - 1), fill=255)
+    m = m.resize((diametro, diametro), Image.LANCZOS)
+    imagen.paste(color, (centro[0] - diametro // 2, centro[1] - diametro // 2,
+                         centro[0] - diametro // 2 + diametro,
+                         centro[1] - diametro // 2 + diametro), m)
+
+
+def armar_foto(rutas, tam):
+    """Arma la imagen del recuadro: 1 producto grande o varios lado a lado con un '+'."""
+    w, h = tam
+    lienzo = Image.new("RGB", tam, BLANCO)
+    n = len(rutas)
+    ancho_slot = w / n
+    for i, ruta in enumerate(rutas):
+        x0 = round(i * ancho_slot)
+        sw, sh = round((i + 1) * ancho_slot) - x0, h
+        if ruta is None or not Path(ruta).is_file():
+            print(f"Aviso: no se encontró la foto del producto {i + 1} ({ruta}).")
+            continue
+        img = ImageOps.exif_transpose(Image.open(ruta)).convert("RGB")
+        modo, color = tipo_de_fondo(img)
+
+        if modo == "cubrir":  # foto sin fondo liso: llena todo su espacio
+            lienzo.paste(retocar(ImageOps.fit(img, (sw, sh), Image.LANCZOS)), (x0, 0))
+            continue
+
+        circulo(lienzo, (x0 + sw // 2, sh // 2), int(min(sw, sh) * 0.94), COLOR_CIRCULO)
+        prod = ajustar(img, sw, sh, 0.90)
+        px, py = x0 + (sw - prod.width) // 2, (sh - prod.height) // 2
+
+        if modo == "blanco":  # el blanco del fondo desaparece al "multiplicar"
+            region = lienzo.crop((px, py, px + prod.width, py + prod.height))
+            lienzo.paste(ImageChops.multiply(region, retocar(prod)), (px, py))
+        else:  # fondo de color liso: se recorta y se le agrega una sombra suave
+            rgba = recortar_fondo(prod, color)
+            alfa = rgba.getchannel("A")
+            sombra_m = Image.new("L", tam, 0)
+            sombra_m.paste(alfa.point(lambda v: int(v * 0.35)), (px, py + 14))
+            sombra_m = sombra_m.filter(ImageFilter.GaussianBlur(14))
+            lienzo.paste((60, 45, 20), (0, 0, w, h), sombra_m)
+            rgb = retocar(rgba.convert("RGB"))
+            rgb.putalpha(alfa)
+            lienzo.paste(rgb, (px, py), rgb)
+
+    d = ImageDraw.Draw(lienzo)
+    for i in range(1, n):  # signo "+" entre productos
+        cx = round(i * ancho_slot)
+        circulo(lienzo, (cx, h // 2), 104, BLANCO)
+        circulo(lienzo, (cx, h // 2), 88, OSCURO)
+        d.text((cx, h // 2 - 4), "+", font=cargar_fuente(78), fill=AMARILLO, anchor="mm")
+    return lienzo
+
+
 # ---------- Generación de la imagen ----------
 def crear_imagen(oferta, ruta_salida):
     base = crear_fondo()
@@ -157,26 +306,19 @@ def crear_imagen(oferta, ruta_salida):
     d.text((W // 2, 420), TITULO, font=fuente_t, fill=BLANCO, anchor="mm")
 
     # --- Foto con marco blanco ---
+    partes = [p.strip() for p in oferta["producto"].split("+") if p.strip()]
     caja_foto = (margen, 520, W - margen, 1110)
     sombra(base, caja_foto, 44, dy=16, blur=22, alpha=110)
     rect_redondeado(base, caja_foto, 44, BLANCO)
     interior = (caja_foto[0] + 14, caja_foto[1] + 14, caja_foto[2] - 14, caja_foto[3] - 14)
     tam = (interior[2] - interior[0], interior[3] - interior[1])
-    nombre_foto = (oferta.get("imagen") or "").strip()
-    ruta_foto = Path(nombre_foto)
-    if nombre_foto and ruta_foto.is_file():
-        foto = Image.open(ruta_foto).convert("RGB")
-        foto = ImageOps.fit(foto, tam).convert("RGBA")
-        base.paste(foto, (interior[0], interior[1]), mascara_redondeada(tam, 34))
-    else:
-        print(f"Aviso: sin foto para '{oferta['producto']}' (imagen: '{nombre_foto}').")
-        rect_redondeado(base, interior, 34, (250, 246, 205))
+    foto = armar_foto(fotos_de_oferta(oferta, partes), tam).convert("RGBA")
+    base.paste(foto, (interior[0], interior[1]), mascara_redondeada(tam, 34))
 
     # --- Tarjeta blanca con los items del combo ---
     caja_card = (margen, 1150, W - margen, 1500)
     sombra(base, caja_card, 44, dy=14, blur=20, alpha=100)
     rect_redondeado(base, caja_card, 44, BLANCO)
-    partes = [p.strip() for p in oferta["producto"].split("+") if p.strip()]
     lineas = [partes[0]] + ["+ " + p for p in partes[1:]]
     centro_card = (caja_card[1] + caja_card[3]) / 2 - 25  # deja lugar al precio
     for i, linea in enumerate(lineas):
