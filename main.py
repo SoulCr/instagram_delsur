@@ -6,6 +6,7 @@ Uso:
     python main.py                       -> solo genera las imágenes (modo prueba)
     python main.py --fecha 2026-10-14    -> prueba con las ofertas de otra fecha
     python main.py --publicar            -> genera, sube a Cloudinary y publica
+    python main.py --solo 1 --publicar   -> procesa solo la historia número 1 (para probar)
     python main.py --verificar           -> comprueba que el token de Instagram funciona
     python main.py --renovar-token       -> pide un token nuevo por 60 días más
 
@@ -21,9 +22,10 @@ import csv
 import os
 import time
 import unicodedata
-from datetime import date
+from datetime import date, datetime
 from functools import lru_cache
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import requests
 from dotenv import load_dotenv
@@ -62,11 +64,14 @@ COLOR_CIRCULO = (255, 249, 222)  # círculo suave detrás de cada producto (muy 
 REGLAS_FOTOS = [
     (("mila", "pollo"), "milanesas_pollo"),
     (("mila", "carne"), "milanesas_carne"),
+    (("patita",), "patitas_pollo"),
     (("pata",), "pata_muslo"),
     (("pechuga",), "pechuga"),
     (("chori",), "chorizos"),
     (("picada",), "carne_picada"),
 ]
+
+ZONA_HORARIA = "America/Argentina/Buenos_Aires"  # para saber qué día es "hoy" en tu zona
 
 CSV_OFERTAS = "ofertas.csv"
 CARPETA_SALIDA = Path("salida")
@@ -74,6 +79,15 @@ W, H = 1080, 1920  # formato vertical 9:16
 
 
 # ---------- Lectura de datos ----------
+def hoy():
+    """Fecha de hoy en Argentina (importa cuando corre en un servidor con otra hora)."""
+    try:
+        return datetime.now(ZoneInfo(ZONA_HORARIA)).date().isoformat()
+    except Exception:
+        return date.today().isoformat()
+
+
+
 def leer_ofertas(fecha_iso):
     if not Path(CSV_OFERTAS).is_file():
         raise SystemExit(
@@ -406,10 +420,12 @@ def renovar_token():
 # ---------- Programa principal ----------
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--fecha", default=date.today().isoformat(),
+    parser.add_argument("--fecha", default=hoy(),
                         help="fecha de las ofertas (AAAA-MM-DD), por defecto hoy")
     parser.add_argument("--publicar", action="store_true",
                         help="subir a Cloudinary y publicar en Instagram")
+    parser.add_argument("--solo", type=int, metavar="N",
+                        help="procesar solo la historia número N del día (útil para probar)")
     parser.add_argument("--verificar", action="store_true",
                         help="comprobar que el token de Instagram funciona")
     parser.add_argument("--renovar-token", action="store_true",
@@ -428,6 +444,11 @@ def main():
     if not ofertas:
         print(f"No hay ofertas cargadas para {args.fecha}.")
         return
+
+    if args.solo:
+        if not 1 <= args.solo <= len(ofertas):
+            raise SystemExit(f"--solo debe estar entre 1 y {len(ofertas)}.")
+        ofertas = [ofertas[args.solo - 1]]
 
     print(f"{len(ofertas)} historia(s) para {args.fecha}.")
     for i, oferta in enumerate(ofertas, start=1):

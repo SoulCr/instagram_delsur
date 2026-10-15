@@ -1,0 +1,29 @@
+name: Publicar historias del día
+
+on:
+  schedule:
+    # Todos los días a las 12:07 UTC = 09:07 en Argentina.
+    # (GitHub usa hora UTC y puede demorar algunos minutos en arrancar.)
+    - cron: "7 12 * * *"
+  workflow_dispatch:   # permite ejecutarlo a mano desde la pestaña Actions
+
+jobs:
+  publicar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Publicar las historias de hoy
+        run: python main.py --publicar
+        env:
+          ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN }}
+          CLOUDINARY_URL: ${{ secrets.CLOUDINARY_URL }}
