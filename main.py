@@ -6,6 +6,8 @@ Uso:
     python main.py                       -> solo genera las imágenes (modo prueba)
     python main.py --fecha 2026-10-14    -> prueba con las ofertas de otra fecha
     python main.py --publicar            -> genera, sube a Cloudinary y publica
+    python main.py --verificar           -> comprueba que el token de Instagram funciona
+    python main.py --renovar-token       -> pide un token nuevo por 60 días más
 
 ofertas.csv:  fecha,producto,precio,imagen
     - Cada fila es UNA historia. Todas las filas con la fecha del día se publican.
@@ -30,9 +32,12 @@ from PIL import (Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter,
 
 load_dotenv()
 
-IG_USER_ID = os.getenv("IG_USER_ID")
+# Instagram API with Instagram Login (no hace falta página de Facebook)
+IG_USER_ID = os.getenv("IG_USER_ID") or "me"  # "me" = la cuenta dueña del token
 TOKEN = os.getenv("ACCESS_TOKEN")
-BASE = "https://graph.facebook.com/v21.0"
+IG_HOST = os.getenv("IG_HOST", "https://graph.instagram.com")
+IG_VERSION = os.getenv("IG_API_VERSION", "v25.0")
+BASE = f"{IG_HOST}/{IG_VERSION}"
 
 # ---- Ajustes de diseño (cambialos a gusto) ----
 NOMBRE_NEGOCIO = "DEL SUR"
@@ -352,23 +357,50 @@ def subir_a_cloudinary(ruta):
     return cloudinary.uploader.upload(str(ruta))["secure_url"]
 
 
-def _post(endpoint, datos):
-    r = requests.post(f"{BASE}/{IG_USER_ID}/{endpoint}", data=datos, timeout=60)
+def _llamar(metodo, ruta, **kwargs):
+    if not TOKEN:
+        raise SystemExit("Falta ACCESS_TOKEN en el archivo .env")
+    r = requests.request(metodo, f"{BASE}/{ruta}", timeout=60,
+                         headers={"Authorization": f"Bearer {TOKEN}"}, **kwargs)
     if not r.ok:
         raise RuntimeError(f"Error de Instagram ({r.status_code}): {r.text}")
     return r.json()
 
 
+def esperar_contenedor(id_contenedor, intentos=10, pausa=3):
+    """Espera a que Instagram termine de procesar la imagen antes de publicarla."""
+    for _ in range(intentos):
+        estado = _llamar("GET", id_contenedor, params={"fields": "status_code"}).get("status_code")
+        if estado == "FINISHED":
+            return
+        if estado in ("ERROR", "EXPIRED"):
+            raise RuntimeError(f"Instagram no pudo procesar la imagen (estado: {estado})")
+        time.sleep(pausa)
+
+
 def publicar_historia(image_url):
-    contenedor = _post("media", {
-        "image_url": image_url,
-        "media_type": "STORIES",
-        "access_token": TOKEN,
-    })
-    return _post("media_publish", {
-        "creation_id": contenedor["id"],
-        "access_token": TOKEN,
-    })
+    contenedor = _llamar("POST", f"{IG_USER_ID}/media",
+                         data={"image_url": image_url, "media_type": "STORIES"})
+    esperar_contenedor(contenedor["id"])
+    return _llamar("POST", f"{IG_USER_ID}/media_publish",
+                   data={"creation_id": contenedor["id"]})
+
+
+def verificar_token():
+    datos = _llamar("GET", "me", params={"fields": "user_id,username"})
+    print("Token válido. Cuenta:", datos.get("username"), "| ID:", datos.get("user_id"))
+
+
+def renovar_token():
+    """El token dura 60 días. Esto pide uno nuevo (el actual debe tener más de 24 h)."""
+    r = requests.get(f"{IG_HOST}/refresh_access_token", timeout=60,
+                     params={"grant_type": "ig_refresh_token", "access_token": TOKEN})
+    if not r.ok:
+        raise RuntimeError(f"No se pudo renovar el token ({r.status_code}): {r.text}")
+    datos = r.json()
+    print("Token nuevo (copialo a tu .env como ACCESS_TOKEN):")
+    print(datos["access_token"])
+    print(f"Vale por {datos.get('expires_in', 0) // 86400} días.")
 
 
 # ---------- Programa principal ----------
@@ -378,7 +410,16 @@ def main():
                         help="fecha de las ofertas (AAAA-MM-DD), por defecto hoy")
     parser.add_argument("--publicar", action="store_true",
                         help="subir a Cloudinary y publicar en Instagram")
+    parser.add_argument("--verificar", action="store_true",
+                        help="comprobar que el token de Instagram funciona")
+    parser.add_argument("--renovar-token", action="store_true",
+                        help="pedir un token nuevo por 60 días más")
     args = parser.parse_args()
+
+    if args.verificar:
+        return verificar_token()
+    if args.renovar_token:
+        return renovar_token()
 
     if not Path(FUENTE).exists():
         print(f"Aviso: no se encontró {FUENTE}, se usa la fuente por defecto.")
