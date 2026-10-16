@@ -11,7 +11,8 @@ Uso:
     python main.py --renovar-token       -> pide un token nuevo por 60 días más
 
 ofertas.csv:  fecha,producto,precio,imagen
-    - Cada fila es UNA historia. Todas las filas con la fecha del día se publican.
+    - Cada fila es UNA historia. Se publican las filas con la fecha del día
+      y también las que tienen la fecha VACÍA (esas salen todos los días).
     - En "producto" separá los items con "+"  (ej: 2 kg pata muslo + 1 kg chori)
     - "imagen" es opcional: si la dejás vacía, las fotos se buscan solas en fotos/
       según el producto (pata muslo, pechuga, chori, picada, mila pollo, mila carne).
@@ -100,8 +101,9 @@ def leer_ofertas(fecha_iso):
         f.seek(0)
         # Excel en español suele guardar con ";" en vez de ","
         sep = ";" if primera_linea.count(";") > primera_linea.count(",") else ","
+        # fecha vacía = la oferta se publica todos los días
         return [fila for fila in csv.DictReader(f, delimiter=sep)
-                if (fila.get("fecha") or "").strip() == fecha_iso]
+                if (fila.get("fecha") or "").strip() in ("", fecha_iso)]
 
 
 # ---------- Utilidades de dibujo ----------
@@ -424,6 +426,8 @@ def main():
                         help="fecha de las ofertas (AAAA-MM-DD), por defecto hoy")
     parser.add_argument("--publicar", action="store_true",
                         help="subir a Cloudinary y publicar en Instagram")
+    parser.add_argument("--avisar-si-vacio", action="store_true",
+                        help="terminar con error si no hay ofertas para el día (GitHub avisa por mail)")
     parser.add_argument("--solo", type=int, metavar="N",
                         help="procesar solo la historia número N del día (útil para probar)")
     parser.add_argument("--verificar", action="store_true",
@@ -443,6 +447,8 @@ def main():
     ofertas = leer_ofertas(args.fecha)
     if not ofertas:
         print(f"No hay ofertas cargadas para {args.fecha}.")
+        if args.avisar_si_vacio:
+            raise SystemExit(1)
         return
 
     if args.solo:

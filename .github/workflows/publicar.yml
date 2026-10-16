@@ -23,7 +23,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Publicar las historias de hoy
-        run: python main.py --publicar
+        run: python main.py --publicar --avisar-si-vacio  # sin ofertas para hoy = error y mail
         env:
           ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN }}
           CLOUDINARY_URL: ${{ secrets.CLOUDINARY_URL }}
