@@ -22,6 +22,11 @@ jobs:
       - name: Instalar dependencias
         run: pip install -r requirements.txt
 
+      - name: Verificar acceso a Instagram
+        run: python main.py --verificar
+        env:
+          ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN }}
+
       - name: Publicar las historias de hoy
         run: python main.py --publicar --avisar-si-vacio  # sin ofertas para hoy = error y mail
         env:

@@ -379,7 +379,11 @@ def _llamar(metodo, ruta, **kwargs):
     r = requests.request(metodo, f"{BASE}/{ruta}", timeout=60,
                          headers={"Authorization": f"Bearer {TOKEN}"}, **kwargs)
     if not r.ok:
-        raise RuntimeError(f"Error de Instagram ({r.status_code}): {r.text}")
+        ayuda = ""
+        if "API access blocked" in r.text:
+            ayuda = ("\n-> Meta bloqueó el acceso de la app a la API. Revisá developers.facebook.com "
+                     "(alertas y verificación de la cuenta de desarrollador) y volvé a probar más tarde.")
+        raise RuntimeError(f"Error de Instagram ({r.status_code}): {r.text}{ayuda}")
     return r.json()
 
 
