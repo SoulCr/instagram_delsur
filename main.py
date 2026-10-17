@@ -6,6 +6,7 @@ Uso:
     python main.py                       -> solo genera las imágenes (modo prueba)
     python main.py --fecha 2026-10-14    -> prueba con las ofertas de otra fecha
     python main.py --publicar            -> genera, sube a Cloudinary y publica
+    python main.py --resumen             -> genera solo la imagen resumen con todas las ofertas
     python main.py --solo 1 --publicar   -> procesa solo la historia número 1 (para probar)
     python main.py --verificar           -> comprueba que el token de Instagram funciona
     python main.py --renovar-token       -> pide un token nuevo por 60 días más
@@ -154,19 +155,47 @@ def sombra(base, caja, radio, dy=14, blur=20, alpha=100):
     base.alpha_composite(capa.filter(ImageFilter.GaussianBlur(blur)))
 
 
-def crear_fondo():
+def crear_fondo(tam=(W, H)):
     """Degradado amarillo con círculos decorativos suaves."""
-    degradado = Image.linear_gradient("L").resize((W, H))
-    fondo = Image.composite(Image.new("RGB", (W, H), AMARILLO_OSCURO),
-                            Image.new("RGB", (W, H), AMARILLO_CLARO),
+    tw, th = tam
+    sy = th / H
+    degradado = Image.linear_gradient("L").resize(tam)
+    fondo = Image.composite(Image.new("RGB", tam, AMARILLO_OSCURO),
+                            Image.new("RGB", tam, AMARILLO_CLARO),
                             degradado).convert("RGBA")
-    capa = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    capa = Image.new("RGBA", tam, (0, 0, 0, 0))
     dc = ImageDraw.Draw(capa)
-    dc.ellipse((-260, 1150, 460, 1870), fill=(255, 255, 255, 50))
-    dc.ellipse((680, 250, 1420, 990), fill=(255, 255, 255, 45))
+    dc.ellipse((-260, int(1150 * sy), 460, int(1870 * sy)), fill=(255, 255, 255, 50))
+    dc.ellipse((680, int(250 * sy), 1420, int(990 * sy)), fill=(255, 255, 255, 45))
     dc.ellipse((-220, -220, 420, 420), fill=(200, 45, 32, 28))
     fondo.alpha_composite(capa)
     return fondo
+
+
+def dibujar_logo(base, d, diam, cy):
+    caja_logo = ((W - diam) // 2, cy - diam // 2, (W + diam) // 2, cy + diam // 2)
+    ruta_logo = Path(LOGO)
+    if ruta_logo.is_file():
+        sombra(base, caja_logo, diam // 2, dy=10, blur=16, alpha=110)
+        logo = Image.open(ruta_logo).convert("RGBA").resize((diam, diam), Image.LANCZOS)
+        base.paste(logo, (caja_logo[0], caja_logo[1]), logo)
+    else:
+        print(f"Aviso: no se encontró el logo {LOGO}, se usa el nombre del negocio.")
+        d.text((W // 2, cy), NOMBRE_NEGOCIO, font=cargar_fuente(int(diam * 0.4)),
+               fill=ROJO, anchor="mm")
+
+
+def dibujar_cinta(base, d, texto, cy, alto, tam_fuente):
+    fuente = cargar_fuente(tam_fuente)
+    ancho = int(d.textlength(texto, font=fuente)) + 150
+    caja = ((W - ancho) // 2, cy - alto // 2, (W + ancho) // 2, cy + alto // 2)
+    sombra(base, caja, alto // 2, dy=8, blur=12, alpha=90)
+    rect_redondeado(base, caja, alto // 2, ROJO)
+    d.text((W // 2, cy), texto, font=fuente, fill=BLANCO, anchor="mm")
+
+
+def partes_de(oferta):
+    return [p.strip() for p in oferta["producto"].split("+") if p.strip()]
 
 
 # ---------- Fotos de productos ----------
@@ -305,29 +334,12 @@ def crear_imagen(oferta, ruta_salida):
     d = ImageDraw.Draw(base)
     margen = 90
 
-    # --- Logo ---
-    diam, cy = 290, 195
-    caja_logo = ((W - diam) // 2, cy - diam // 2, (W + diam) // 2, cy + diam // 2)
-    ruta_logo = Path(LOGO)
-    if ruta_logo.is_file():
-        sombra(base, caja_logo, diam // 2, dy=10, blur=16, alpha=110)
-        logo = Image.open(ruta_logo).convert("RGBA").resize((diam, diam), Image.LANCZOS)
-        base.paste(logo, (caja_logo[0], caja_logo[1]), logo)
-    else:
-        print(f"Aviso: no se encontró el logo {LOGO}, se usa el nombre del negocio.")
-        d.text((W // 2, cy), NOMBRE_NEGOCIO, font=cargar_fuente(120),
-               fill=ROJO, anchor="mm")
-
-    # --- Cinta roja con el título ---
-    fuente_t = cargar_fuente(78)
-    ancho_t = int(d.textlength(TITULO, font=fuente_t)) + 150
-    caja_t = ((W - ancho_t) // 2, 365, (W + ancho_t) // 2, 475)
-    sombra(base, caja_t, 55, dy=8, blur=12, alpha=90)
-    rect_redondeado(base, caja_t, 55, ROJO)
-    d.text((W // 2, 420), TITULO, font=fuente_t, fill=BLANCO, anchor="mm")
+    # --- Logo y cinta roja con el título ---
+    dibujar_logo(base, d, 290, 195)
+    dibujar_cinta(base, d, TITULO, 420, 110, 78)
 
     # --- Foto con marco blanco ---
-    partes = [p.strip() for p in oferta["producto"].split("+") if p.strip()]
+    partes = partes_de(oferta)
     caja_foto = (margen, 520, W - margen, 1110)
     sombra(base, caja_foto, 44, dy=16, blur=22, alpha=110)
     rect_redondeado(base, caja_foto, 44, BLANCO)
@@ -365,6 +377,96 @@ def crear_imagen(oferta, ruta_salida):
     ruta_salida.parent.mkdir(parents=True, exist_ok=True)
     base.convert("RGB").save(ruta_salida, quality=95)
     return ruta_salida
+
+
+# ---------- Imagen resumen (todas las ofertas en una sola imagen) ----------
+TITULO_RESUMEN = "OFERTAS"
+ALTO_RESUMEN = 1350   # formato 4:5, sirve para feed de Instagram, Facebook y WhatsApp
+MAX_FILAS = 6         # si hay más ofertas, se arma una imagen extra
+
+
+def dibujar_resumen(ofertas, ruta_salida):
+    tam = (W, ALTO_RESUMEN)
+    base = crear_fondo(tam)
+    d = ImageDraw.Draw(base)
+
+    dibujar_logo(base, d, 190, 135)
+    dibujar_cinta(base, d, TITULO_RESUMEN, 300, 96, 56)
+
+    # zona de filas
+    arriba, abajo, hueco = 385, ALTO_RESUMEN - 125, 16
+    n = len(ofertas)
+    alto_fila = min(190, (abajo - arriba - hueco * (n - 1)) // n)
+    total = n * alto_fila + hueco * (n - 1)
+    y = arriba + (abajo - arriba - total) // 2
+
+    fotos_filas = [fotos_de_oferta(o, partes_de(o)) for o in ofertas]
+    max_f = max(1, min(2, max(len(f) for f in fotos_filas)))
+    dia = int(alto_fila * 0.76)
+    solape = int(dia * 0.16)
+    ancho_miniaturas = max_f * dia - (max_f - 1) * solape
+    x0, x1 = 60, W - 60
+
+    for oferta, fotos in zip(ofertas, fotos_filas):
+        caja = (x0, y, x1, y + alto_fila)
+        sombra(base, caja, 36, dy=8, blur=12, alpha=90)
+        rect_redondeado(base, caja, 36, BLANCO)
+        cy = y + alto_fila // 2
+
+        # miniaturas de los productos
+        mostradas = fotos[:max_f]
+        ancho_fila = len(mostradas) * dia - (len(mostradas) - 1) * solape
+        inicio = x0 + 22 + (ancho_miniaturas - ancho_fila) // 2  # centradas en su zona
+        for k, ruta in enumerate(mostradas):
+            px = inicio + k * (dia - solape)
+            circulo(base, (px + dia // 2, cy), dia + 8, BLANCO + (255,))
+            mini = armar_foto([ruta], (dia, dia)).convert("RGBA")
+            base.paste(mini, (px, cy - dia // 2), mascara_redondeada((dia, dia), dia // 2))
+
+        # precio en una píldora roja (a la derecha)
+        precio = formatear_precio(oferta["precio"])
+        fuente_p = fuente_que_entra(d, precio, int(alto_fila * 0.40), 300)
+        ancho_p = int(d.textlength(precio, font=fuente_p)) + 56
+        alto_p = int(alto_fila * 0.58)
+        caja_p = (x1 - 22 - ancho_p, cy - alto_p // 2, x1 - 22, cy + alto_p // 2)
+        rect_redondeado(base, caja_p, alto_p // 2, ROJO)
+        d.text(((caja_p[0] + caja_p[2]) // 2, cy), precio, font=fuente_p,
+               fill=BLANCO, anchor="mm")
+
+        # texto del combo (entre las miniaturas y el precio)
+        xt = x0 + 22 + ancho_miniaturas + 26
+        ancho_t = caja_p[0] - 20 - xt
+        partes = partes_de(oferta)
+        lineas = [partes[0]] + ["+ " + p for p in partes[1:]]
+        tam_max = min(52 if len(lineas) == 1 else 40, int(alto_fila * 0.30))
+        fuentes = [fuente_que_entra(d, l, tam_max, ancho_t) for l in lineas]
+        sep = int(max(f.size for f in fuentes) * 1.2)
+        for i, (linea, fuente) in enumerate(zip(lineas, fuentes)):
+            yy = cy + (i - (len(lineas) - 1) / 2) * sep
+            d.text((xt, yy), linea, font=fuente,
+                   fill=ROJO if i > 0 else OSCURO, anchor="lm")
+        y += alto_fila + hueco
+
+    # pie
+    d.rectangle((0, ALTO_RESUMEN - 100, W, ALTO_RESUMEN), fill=OSCURO)
+    d.text((W // 2, ALTO_RESUMEN - 50), TEXTO_PIE, font=cargar_fuente(46),
+           fill=AMARILLO, anchor="mm")
+
+    ruta_salida.parent.mkdir(parents=True, exist_ok=True)
+    base.convert("RGB").save(ruta_salida, quality=95)
+    return ruta_salida
+
+
+def crear_resumen(ofertas, fecha_iso):
+    """Devuelve la lista de imágenes resumen (una por cada MAX_FILAS ofertas)."""
+    n_imagenes = -(-len(ofertas) // MAX_FILAS)   # cantidad de imágenes (redondeo hacia arriba)
+    por_imagen = -(-len(ofertas) // n_imagenes)   # reparte parejo (ej: 7 ofertas = 4 + 3)
+    grupos = [ofertas[i:i + por_imagen] for i in range(0, len(ofertas), por_imagen)]
+    rutas = []
+    for n, grupo in enumerate(grupos, start=1):
+        sufijo = "" if len(grupos) == 1 else f"_{n}"
+        rutas.append(dibujar_resumen(grupo, CARPETA_SALIDA / f"resumen_{fecha_iso}{sufijo}.jpg"))
+    return rutas
 
 
 # ---------- Publicación (solo con --publicar) ----------
@@ -430,6 +532,8 @@ def main():
                         help="fecha de las ofertas (AAAA-MM-DD), por defecto hoy")
     parser.add_argument("--publicar", action="store_true",
                         help="subir a Cloudinary y publicar en Instagram")
+    parser.add_argument("--resumen", action="store_true",
+                        help="generar solo la imagen resumen con todas las ofertas (no publica nada)")
     parser.add_argument("--avisar-si-vacio", action="store_true",
                         help="terminar con error si no hay ofertas para el día (GitHub avisa por mail)")
     parser.add_argument("--solo", type=int, metavar="N",
@@ -455,10 +559,25 @@ def main():
             raise SystemExit(1)
         return
 
+    if args.resumen:
+        for ruta in crear_resumen(ofertas, args.fecha):
+            print("Imagen resumen:", ruta)
+        return
+
     if args.solo:
         if not 1 <= args.solo <= len(ofertas):
             raise SystemExit(f"--solo debe estar entre 1 y {len(ofertas)}.")
         ofertas = [ofertas[args.solo - 1]]
+    else:
+        # Imagen resumen para grupos y WhatsApp (si falla, no frena las historias)
+        try:
+            for ruta in crear_resumen(ofertas, args.fecha):
+                print("Imagen resumen:", ruta)
+                if args.publicar:
+                    print("    Resumen en internet (para grupos y WhatsApp):",
+                          subir_a_cloudinary(ruta))
+        except Exception as e:
+            print("Aviso: no se pudo crear la imagen resumen:", e)
 
     print(f"{len(ofertas)} historia(s) para {args.fecha}.")
     for i, oferta in enumerate(ofertas, start=1):
