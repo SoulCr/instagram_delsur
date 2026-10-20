@@ -46,7 +46,7 @@ BASE = f"{IG_HOST}/{IG_VERSION}"
 # ---- Ajustes de diseño (cambialos a gusto) ----
 NOMBRE_NEGOCIO = "DEL SUR"
 TITULO = "OFERTA"
-TEXTO_PIE = "@delsurmercados_"
+TEXTO_PIE = "Islas Malvinas y Quintana"
 LOGO = "fotos/logo.png"  # insignia circular con fondo transparente
 FUENTE = "fuentes/Poppins-ExtraBold.ttf"
 
